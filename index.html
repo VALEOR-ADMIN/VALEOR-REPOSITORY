@@ -1407,7 +1407,8 @@
     const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     const isSafari = /Safari/.test(ua) && !/Chrome|CriOS|FxiOS/.test(ua);
     const isInAppBrowser = /FBAN|FBAV|Instagram|Line\/|MicroMessenger|TikTok/.test(ua);
-    return (isIOS && isSafari) || isInAppBrowser;
+    // iOS Safari: use popup too - redirect loses the sign-in due to Safari tracking prevention
+    return isInAppBrowser;
   }
 
   window.__valeorCloud = {
