@@ -1370,6 +1370,14 @@
   </div>
 </div>
 
+<div class="overlay" id="starterPickOverlay" style="z-index:210;">
+  <div class="card" style="max-width:360px;">
+    <h2 style="margin-bottom:6px;">Choose your hero</h2>
+    <p style="font-size:12px;opacity:0.75;margin:0 0 14px;">Pick the Ghost you start with. The others unlock as you level up.</p>
+    <div id="starterPickRow" style="display:flex;gap:12px;justify-content:center;"></div>
+  </div>
+</div>
+
 <script type="module">
   import { initializeApp } from "https://cdn.jsdelivr.net/npm/firebase@10.13.2/app/+esm";
   import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged, signInWithCredential } from "https://cdn.jsdelivr.net/npm/firebase@10.13.2/auth/+esm";
@@ -2757,7 +2765,7 @@
   }
   let save = loadSave();
   if(typeof INFINITE_CURRENCY !== 'undefined' && INFINITE_CURRENCY){ save.coins = Math.max(save.coins||0, 999999999); save.gems = Math.max(save.gems||0, 999999999); }
-  if(save.selectedChar !== 0){ save.selectedChar = 0; }
+  if(typeof save.selectedChar !== 'number'){ save.selectedChar = (typeof save.starterHero === 'number') ? save.starterHero : 0; }
   save.keys = save.keys || {common:0, rare:0, epic:0, legendary:0};
   save.materials = save.materials || {basic:0, rare:0};
   save.consumables = save.consumables || {healthPotions:0};
@@ -3036,6 +3044,53 @@
         location.reload();
       }, { title:'Log Out', yesLabel:'Log Out', noLabel:'Cancel' });
     });
+
+    // ----- First launch: choose a starter hero (Raiden Kade or Korrin Vale) -----
+    function renderStarterPicker(){
+      const row = document.getElementById('starterPickRow');
+      if(!row) return;
+      row.innerHTML = '';
+      STARTER_CHOICES.forEach(ci=>{
+        const c = CHARACTERS[ci];
+        const rar = getCharRarity(ci);
+        const card = document.createElement('button');
+        card.className = 'bigBtn';
+        card.style.cssText = 'flex:1;display:flex;flex-direction:column;align-items:center;gap:8px;padding:12px 8px;background:#101828;color:var(--text);border:2px solid '+rar.color+';border-radius:14px;';
+        card.innerHTML = '<img src="'+(CHAR_PORTRAITS[ci]||c.src)+'" style="width:96px;height:96px;border-radius:50%;object-fit:cover;object-position:center top;border:3px solid '+rar.color+';">'
+          + '<span style="font-weight:800;font-size:14px;">'+c.name+'</span>'
+          + '<span style="font-size:11px;color:'+rar.color+';">'+rar.label+'</span>';
+        card.addEventListener('click', ()=>{
+          save.starterHero = ci;
+          save.selectedChar = ci;
+          save.starterChosen = true;
+          writeSave();
+          document.getElementById('starterPickOverlay').classList.remove('show');
+          try{ if(typeof updateCurrentCharDisplay==='function') updateCurrentCharDisplay(); }catch(e){}
+          try{ if(typeof renderSkinsGrid==='function') renderSkinsGrid(); }catch(e){}
+          try{ updateLobbyStats(); }catch(e){}
+          showToast(c.name + ' joins your squad!');
+        });
+        row.appendChild(card);
+      });
+    }
+    setInterval(()=>{
+      if(!window.__valeorAuthKnown) return;
+      const pick = document.getElementById('starterPickOverlay');
+      if(!pick) return;
+      // keep the selected hero valid (e.g. an old save that pointed at a hero that isn't unlocked)
+      try{
+        const sc = save.selectedChar||0;
+        if(!(isHeroUnlocked(sc) && isHeroPlayable(sc))) save.selectedChar = starterHeroId();
+      }catch(e){}
+      if(save.starterChosen || window.__valeorIsAdmin) { pick.classList.remove('show'); return; }
+      const gate = document.getElementById('authGateOverlay');
+      const loading = document.getElementById('loadingScreen');
+      const loadingVisible = loading && getComputedStyle(loading).display !== 'none' && getComputedStyle(loading).opacity !== '0';
+      const lobbyVisible = startOverlay && startOverlay.classList.contains('show');
+      if(gate && gate.classList.contains('show')) return;
+      if(loadingVisible || !lobbyVisible) return;
+      if(!pick.classList.contains('show')){ renderStarterPicker(); pick.classList.add('show'); }
+    }, 800);
 
     const btnDev = document.getElementById('btnDevModeLobby');
     if(btnDev) btnDev.addEventListener('click', toggleDevMode);
@@ -3690,7 +3745,7 @@
   // DEV: one-time seed of every item variation that currently exists in the game - one of each
   // equipment slot at every rarity tier (6 slots x 6 rarities = 36 items) - so the full Inventory
   // range can be previewed. Guarded by a flag so it only ever runs once per save, not on every reload.
-  if(!save._devSeededAllItemsV2){
+  if(false && !save._devSeededAllItemsV2){ // DISABLED: new players must start with an empty inventory
     RARITY_ORDER.forEach(rarity=>{
       EQUIPMENT_SLOTS.forEach(slot=>{
         const item = generateEquipment(slot, rarity, 30);
@@ -6293,7 +6348,7 @@
     ctx.save();
     const flip = Math.cos(p.facing) < 0 ? -1 : 1;
     ctx.scale(flip * squash, (1 - rec*0.05) * (2-squash));
-    const animImg = p.anim.getImage();
+    const animImg = ((save.selectedChar||0) === 0) ? p.anim.getImage() : null; // animated frames exist only for Raiden
     if(animImg){
       const aw = 36, ah = animImg.height/animImg.width*aw;
       ctx.drawImage(animImg, -aw/2, 28-ah, aw, ah);
@@ -6409,7 +6464,7 @@
     purple: {get label(){return t('rarityPurple');}, color:'#b06bff'},
     gold:   {get label(){return t('rarityGold');},   color:'#ffd166'}
   };
-  const CHAR_RARITY = ['blue','purple','blue','blue','gold','purple','blue','blue'];
+  const CHAR_RARITY = ['blue','purple','purple','purple','gold','purple','purple','blue']; // Vex'Thara, Unit-Ghost, Nyra = Epic
   function getCharRarity(ci){ return RARITY[CHAR_RARITY[ci] || 'white']; }
 
   // HERO_DEFS - real foundation layer on top of the existing cosmetic CHARACTERS array.
@@ -6424,14 +6479,17 @@
     { heroId:4, archetype:()=>t('heroArch_krix'),    passive:()=>t('heroPassive_krix'),    weapon:()=>t('heroWeapon_krix'),    skills:()=>[t('heroSkill_generic1'),t('heroSkill_generic2'),t('heroSkill_generic3')], statMul:{hp:0.9,dmg:1.35,spd:1.1}, playable:false },
     { heroId:5, archetype:()=>t('heroArch_baron'),   passive:()=>t('heroPassive_baron'),   weapon:()=>t('heroWeapon_baron'),   skills:()=>[t('heroSkill_generic1'),t('heroSkill_generic2'),t('heroSkill_generic3')], statMul:{hp:0.95,dmg:1.15,spd:1.15}, playable:false },
     { heroId:6, archetype:()=>t('heroArch_nyra'),    passive:()=>t('heroPassive_nyra'),    weapon:()=>t('heroWeapon_nyra'),    skills:()=>[t('heroSkill_generic1'),t('heroSkill_generic2'),t('heroSkill_generic3')], statMul:{hp:0.9,dmg:1.2,spd:1.0},  playable:false },
-    { heroId:7, archetype:()=>t('heroArch_korrin'),  passive:()=>t('heroPassive_korrin'),  weapon:()=>t('heroWeapon_korrin'),  skills:()=>[t('heroSkill_generic1'),t('heroSkill_generic2'),t('heroSkill_generic3')], statMul:{hp:1.1,dmg:0.9,spd:0.95}, playable:false }
+    { heroId:7, archetype:()=>t('heroArch_korrin'),  passive:()=>t('heroPassive_korrin'),  weapon:()=>t('heroWeapon_korrin'),  skills:()=>[t('heroSkill_generic1'),t('heroSkill_generic2'),t('heroSkill_generic3')], statMul:{hp:1.1,dmg:0.9,spd:0.95}, playable:true }
   ];
+  // Starter hero: every new player picks Raiden Kade (0) or Korrin Vale (7) on first launch.
+  const STARTER_CHOICES = [0, 7];
+  function starterHeroId(){ return (typeof save.starterHero === 'number') ? save.starterHero : 0; }
   function getHeroUnlockLevel(ci){
-    if(ci === 0) return 1;
+    if(ci === starterHeroId()) return 1;
     return HERO_UNLOCK_BY_RARITY[CHAR_RARITY[ci] || 'white'];
   }
   function isHeroUnlocked(ci){
-    return ci === 0 || !!save.isAdmin || playerGateLevel() >= getHeroUnlockLevel(ci);
+    return ci === starterHeroId() || !!save.isAdmin || playerGateLevel() >= getHeroUnlockLevel(ci);
   }
   function isHeroPlayable(ci){
     const def = HERO_DEFS[ci];
