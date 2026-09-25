@@ -1236,6 +1236,14 @@
             <button class="bigBtn" id="btnGenderMale" style="flex:1;font-size:12px;padding:8px;">♂ <span id="txtGenderMale">Male</span></button>
             <button class="bigBtn" id="btnGenderFemale" style="flex:1;font-size:12px;padding:8px;">♀ <span id="txtGenderFemale">Female</span></button>
           </div>
+          <div style="display:flex;gap:8px;margin-top:14px;">
+            <button class="bigBtn" id="btnProfileAchievements" style="flex:1;font-size:12px;padding:9px;background:#1c2740;color:var(--text);">🏆 Achievements</button>
+            <button class="bigBtn" id="btnProfileSettings" style="flex:1;font-size:12px;padding:9px;background:#1c2740;color:var(--text);">⚙️ Settings</button>
+          </div>
+          <div id="accountRow" style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(140,180,255,0.2);text-align:center;">
+            <p id="accountStatusText" style="font-size:11px;opacity:0.75;margin:0 0 8px;"></p>
+            <button class="bigBtn" id="btnAccountAction" style="width:100%;font-size:13px;padding:9px;"></button>
+          </div>
         </div>
 
         <div id="profSection_avatar" class="profSection" style="display:none;">
@@ -1384,6 +1392,7 @@
     console.warn('Firebase init failed, cloud save disabled:', e);
   }
   const googleProvider = new GoogleAuthProvider();
+  googleProvider.setCustomParameters({ prompt: 'select_account' }); // always show the account chooser
 
   // Redirect-based sign-in (full-page navigation to Google and back) relies on
   // Firebase's intermediate authDomain (*.firebaseapp.com) remembering the
@@ -1483,6 +1492,7 @@
     },
     getLastRedirectError(){ return fbRedirectError; },
     signOutUser(){
+      try{ if(window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect(); }catch(e){}
       if(!fbReady) return Promise.resolve();
       return signOut(fbAuth);
     },
@@ -2319,7 +2329,7 @@
   const DEV_MODE = DEV_MODE_SOURCE || _urlFlags.dev === '1';
   // DEV: solo-dev build - unlimited coins/diamonds so testing never blocks on currency (this artifact
   // link is private to the developer's own account, so it's safe to leave on).
-  const INFINITE_CURRENCY = true;
+  const INFINITE_CURRENCY = false; // unlimited coins/gems now only for the ADMIN account - see enforceAccountPerks()
   // Formal build-flag distinction (Phase 161-162): PRODUCTION ships with DEV_MODE=false and QA_MODE=false.
   // QA_MODE independently gates window.VALEOR_TEST (a read/limited-write inspection API) from DEV_MODE's
   // destructive on-screen Dev Tools panel - a QA harness driving the game via VALEOR_TEST should not also
@@ -2812,11 +2822,39 @@
   // covers "played as guest on phone, later signs in on the same phone" (local wins, gets pushed up)
   // and "already has cloud progress, signing in on a new device" (cloud wins, gets pulled down). =====
   const ADMIN_EMAIL = 'dadaev.studio@gmail.com';
+  // Admin perks (unlimited coins/gems, all Ghosts, the 🛠 dev menu) belong ONLY to the ADMIN Google
+  // account. Everyone else - guests and any other account - plays a normal fresh game. Nothing is
+  // changed until Firebase has told us who is signed in (so the admin isn't reset while loading).
+  function enforceAccountPerks(){
+    if(!window.__valeorAuthKnown) return;
+    const isAdmin = !!window.__valeorIsAdmin;
+    if(isAdmin){
+      save.coins = Math.max(save.coins||0, 999999999);
+      save.gems = Math.max(save.gems||0, 999999999);
+      save.isAdmin = true;
+    } else {
+      if((save.coins||0) >= 999999999) save.coins = 0;   // clean up old test-build unlimited currency
+      if((save.gems||0) >= 999999999) save.gems = 0;
+      save.isAdmin = false;
+    }
+    const devBtn = document.getElementById('btnDevMode');
+    const devPanel = document.getElementById('devPanel');
+    if(devBtn) devBtn.style.display = isAdmin ? '' : 'none';
+    if(devPanel && !isAdmin) devPanel.classList.remove('show');
+  }
+  // If Firebase never answers (offline / blocked), treat the player as a guest after a few seconds.
+  setTimeout(()=>{
+    if(window.__valeorAuthKnown) return;
+    window.__valeorAuthKnown = true; window.__valeorIsAdmin = false;
+    if(typeof updateLobbyStats==='function') updateLobbyStats();
+  }, 6000);
   function applyCloudSaveIfNewer(cloudData){
     if(!cloudData) return;
     const localTs = save.lastSaveAt || 0;
     const cloudTs = cloudData.lastSaveAt || 0;
-    if(cloudTs > localTs){
+    let preferCloud = false;
+    try{ preferCloud = localStorage.getItem('valeorPreferCloud') === '1'; }catch(e){}
+    if(preferCloud || cloudTs > localTs){
       save = cloudData;
       try{ localStorage.setItem(SAVE_KEY, JSON.stringify(save)); }catch(e){}
     }
@@ -2881,7 +2919,10 @@
     showAuthGate();
   }
   CloudAuth.onChange(function(user){
+    window.__valeorAuthKnown = true;
+    window.__valeorIsAdmin = !!(user && user.email === ADMIN_EMAIL);
     updateCloudStatusUI(user);
+    if(!user){ enforceAccountPerks(); if(typeof updateLobbyStats==='function') updateLobbyStats(); }
     if(user){
       hideAuthGate();
       markAuthGateSeen();
@@ -2889,6 +2930,7 @@
       CloudSaveProvider.load().then(res=>{
         if(res.ok && res.data) applyCloudSaveIfNewer(res.data);
         else CloudSaveProvider.save(save); // first sign-in on this account - seed the cloud copy
+        try{ localStorage.removeItem('valeorPreferCloud'); }catch(e){}
         updateLobbyStats();
       });
     }
@@ -2919,6 +2961,43 @@
         showAuthGate();
       }
     });
+    // ----- Profile > Account: Log Out (signed in) / Sign in (guest) -----
+    function updateAccountRow(){
+      const st = document.getElementById('accountStatusText');
+      const btn = document.getElementById('btnAccountAction');
+      if(!st || !btn) return;
+      const u = CloudAuth.currentUser;
+      if(u){
+        st.textContent = 'Signed in as ' + (u.email || u.displayName || 'Google account');
+        btn.textContent = 'Log Out';
+        btn.style.background = '#5a1f28'; btn.style.color = '#ffd6dc';
+      } else {
+        st.textContent = 'Playing as guest - progress is saved only on this device.';
+        btn.textContent = 'Sign in / Switch account';
+        btn.style.background = '#fff'; btn.style.color = '#1f1f1f';
+      }
+    }
+    CloudAuth.onChange(updateAccountRow);
+    updateAccountRow();
+    const btnAccount = document.getElementById('btnAccountAction');
+    if(btnAccount) btnAccount.addEventListener('click', ()=>{
+      if(!CloudAuth.currentUser){
+        closePanel('profilePanel');
+        showAuthGate();
+        return;
+      }
+      showConfirm('Log out? Your progress is saved to this account and will come back when you sign in again.', async ()=>{
+        try{ await CloudSaveProvider.save(save); }catch(e){}       // push latest progress to this account first
+        try{ await CloudAuth.signOut(); }catch(e){}
+        try{
+          localStorage.removeItem(SAVE_KEY);                  // next account starts clean on this device
+          localStorage.removeItem('valeorAuthGateSeen');      // show the Welcome / sign-in screen again
+          localStorage.setItem('valeorPreferCloud', '1');     // next sign-in loads that account's cloud save
+        }catch(e){}
+        location.reload();
+      }, { title:'Log Out', yesLabel:'Log Out', noLabel:'Cancel' });
+    });
+
     const btnDev = document.getElementById('btnDevModeLobby');
     if(btnDev) btnDev.addEventListener('click', toggleDevMode);
     updateDevModeUI();
@@ -4976,6 +5055,7 @@
       panel.remove();
       return;
     }
+    if(!window.__valeorIsAdmin) btn.style.display = 'none';   // shown only for the ADMIN account
     btn.addEventListener('click', ()=> panel.classList.toggle('show'));
     document.getElementById('devSetLevel').addEventListener('click', ()=> DevTools.setLevel(5));
     document.getElementById('devMaxLevel').addEventListener('click', ()=> DevTools.maxLevel());
@@ -6758,7 +6838,7 @@
   }
 
   function updateLobbyStats(){
-    if(INFINITE_CURRENCY){ save.coins = Math.max(save.coins||0, 999999999); save.gems = Math.max(save.gems||0, 999999999); }
+    enforceAccountPerks();
     const nameEl = document.getElementById('topPlayerName');
     if(nameEl) nameEl.textContent = save.profile.name || getGuestId();
     const coinsEl = document.getElementById('statCoins');
@@ -7055,7 +7135,9 @@
     });
     if(typeof randomizeMenuLabelDrift==='function') randomizeMenuLabelDrift();
   }
+  let currentProfileSection = null;
   function openProfileDetail(key){
+    currentProfileSection = key;
     document.getElementById('profileHub').style.display = 'none';
     document.getElementById('profileDetail').style.display = '';
     document.getElementById('closeProfilePanel').style.display = 'none';
@@ -7956,9 +8038,24 @@
     document.getElementById('passivesPopup').style.display = 'none';
   });
   document.getElementById('closeProfilePanel').addEventListener('click', ()=> closePanel('profilePanel'));
-  document.getElementById('closeProfileDetail').addEventListener('click', ()=> renderProfileTileGrid());
+  document.getElementById('closeProfileDetail').addEventListener('click', ()=>{
+    if(currentProfileSection === 'identity') closePanel('profilePanel');   // Profile -> back to lobby
+    else openProfileDetail('identity');                                     // sub-screen -> back to Profile
+  });
+  document.getElementById('btnProfileAchievements').addEventListener('click', ()=>{
+    renderAchievementsList();
+    openProfileDetail('achievements');
+  });
+  document.getElementById('btnProfileSettings').addEventListener('click', ()=>{
+    renderSettingsPanel();
+    switchPanel('profilePanel', 'settingsPanel');
+  });
   document.getElementById('closeSettingsDetail').addEventListener('click', ()=> renderSettingsPanel());
-  document.getElementById('closeSettingsPanel').addEventListener('click', ()=> switchPanel('settingsPanel', 'profilePanel'));
+  document.getElementById('closeSettingsPanel').addEventListener('click', ()=>{
+    renderProfilePanel();
+    switchPanel('settingsPanel', 'profilePanel');
+    openProfileDetail('identity');
+  });
   document.getElementById('btnResetSettings').addEventListener('click', ()=>{
     showConfirm(t('resetSettingsConfirm'), ()=>{
       resetSettingsToDefault();
