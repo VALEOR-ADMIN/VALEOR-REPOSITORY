@@ -126,6 +126,10 @@
   #startOverlay {
     background: linear-gradient(rgba(5,8,15,0.35), rgba(5,8,15,0.55)), url("lobby_bg.jpg") center/cover no-repeat;
   }
+  /* Lobby menus (Profile, Settings, ...): cover the battle screen underneath with dimmed lobby art */
+  .overlay.menuBg:not(#inventoryPanel) {
+    background: linear-gradient(rgba(5,8,15,0.78), rgba(5,8,15,0.92)), url("lobby_bg.jpg") center/cover no-repeat, #05080f;
+  }
   #inventoryPanel {
     background: #060c18 url('inventory_bg.jpg') center top / cover no-repeat;
   }  .overlay.show { display: flex; animation: overlayIn 0.22s ease; }
@@ -2927,11 +2931,45 @@
       hideAuthGate();
       markAuthGateSeen();
       if(user.email === ADMIN_EMAIL){ save.profile.name = 'ADMIN'; save.isAdmin = true; }
-      CloudSaveProvider.load().then(res=>{
-        if(res.ok && res.data) applyCloudSaveIfNewer(res.data);
-        else CloudSaveProvider.save(save); // first sign-in on this account - seed the cloud copy
-        try{ localStorage.removeItem('valeorPreferCloud'); }catch(e){}
+      let freshFor = null;
+      try{ freshFor = localStorage.getItem('valeorFreshStart'); }catch(e){}
+      if(freshFor === user.uid){
+        // Page was just reloaded with a clean save for this account -> that clean save becomes its cloud copy
+        try{ localStorage.removeItem('valeorFreshStart'); localStorage.removeItem('valeorPreferCloud'); localStorage.setItem('valeorSaveOwner', user.uid); }catch(e){}
+        enforceAccountPerks();
+        writeSave();
+        CloudSaveProvider.save(save);
         updateLobbyStats();
+        return;
+      }
+      CloudSaveProvider.load().then(res=>{
+        if(res.ok && res.data){
+          let owner = null;
+          try{ owner = localStorage.getItem('valeorSaveOwner'); }catch(e){}
+          if(owner !== user.uid){
+            // The save on this device belongs to someone else (a guest / another account):
+            // load THIS account's own progress cleanly and restart the page with it.
+            try{
+              localStorage.setItem(SAVE_KEY, JSON.stringify(res.data));
+              localStorage.setItem('valeorSaveOwner', user.uid);
+              localStorage.removeItem('valeorPreferCloud');
+            }catch(e){}
+            location.reload();
+            return;
+          }
+          applyCloudSaveIfNewer(res.data);   // same account on this device -> newest copy wins
+          try{ localStorage.removeItem('valeorPreferCloud'); }catch(e){}
+          updateLobbyStats();
+        } else if(res.ok && !res.data){
+          // First sign-in ever on this account: start from zero - nothing from the guest/device save
+          try{
+            localStorage.setItem('valeorFreshStart', user.uid);
+            localStorage.removeItem(SAVE_KEY);
+          }catch(e){}
+          location.reload();
+        } else {
+          updateLobbyStats(); // cloud temporarily unreachable - keep playing on the local save
+        }
       });
     }
   });
@@ -2991,6 +3029,7 @@
         try{ await CloudAuth.signOut(); }catch(e){}
         try{
           localStorage.removeItem(SAVE_KEY);                  // next account starts clean on this device
+          localStorage.removeItem('valeorSaveOwner');
           localStorage.removeItem('valeorAuthGateSeen');      // show the Welcome / sign-in screen again
           localStorage.setItem('valeorPreferCloud', '1');     // next sign-in loads that account's cloud save
         }catch(e){}
@@ -7866,6 +7905,7 @@
   }
   function openPanel(id){
     startOverlay.classList.remove('show');
+    document.getElementById(id).classList.add('menuBg');
     document.getElementById(id).classList.add('show');
   }
   function closePanel(id){
@@ -7874,6 +7914,7 @@
   }
   function switchPanel(fromId, toId){
     document.getElementById(fromId).classList.remove('show');
+    document.getElementById(toId).classList.add('menuBg');
     document.getElementById(toId).classList.add('show');
   }
 
@@ -8023,7 +8064,10 @@
   document.getElementById('closeDailyRewardPanel').addEventListener('click', ()=> closePanel('dailyRewardPanel'));
   document.getElementById('btnResetProgress').addEventListener('click', ()=>{
     showConfirm(t('optionsResetConfirm'), ()=>{
-      try{ localStorage.removeItem(SAVE_KEY); }catch(e){}
+      try{
+        localStorage.removeItem(SAVE_KEY);
+        if(CloudAuth.currentUser) localStorage.setItem('valeorFreshStart', CloudAuth.currentUser.uid); // wipe the cloud copy too
+      }catch(e){}
       location.reload();
     });
   });
